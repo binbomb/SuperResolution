@@ -30,7 +30,7 @@ parser.add_argument("--batchsize", default = 16, type =int, help = "batchsize")
 parser.add_argument("--lam1", default = 0.001, type = float, help = "the weight of vgg loss")
 parser.add_argument("--interval", default = 1, type = int, help = "the interval of snapshot")
 parser.add_argument("--testsize", default = 2, type = int, help = "testsize")
-parser.add_argument("--Ntrain", default = 18000, type = int, help  = "the numbef of train images")
+parser.add_argument("--Ntrain", default = 24000, type = int, help  = "the numbef of train images")
 
 args = parser.parse_args()
 epochs = args.epoch
@@ -40,10 +40,10 @@ interval = args.interval
 testsize = args.testsize
 Ntrain = args.Ntrain
 
-image_path = "/usr/MachineLearning/Dataset/trim/train_trim/"
+image_path = "/coco/"
 image_list = os.listdir(image_path)
 
-outdir = "./output_per"
+outdir = "./output"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
@@ -72,7 +72,7 @@ vgg.base.disable_update()
 for epoch in range(epochs):
     sum_gen_loss = 0
     sum_dis_loss = 0
-    for batch in range(0, Ntrain, batchsize):
+    for batch in range(0, 2000, batchsize):
         hr_box = []
         sr_box = []
         for i in range(batchsize):
@@ -93,7 +93,7 @@ for epoch in range(epochs):
 
         x_hr.unchain_backward()
 
-        loss_dis = lambda1 * (F.sum(F.softplus(-y_hr)) / batchsize + F.sum(F.softplus(t_hr)) / batchsize)
+        loss_dis = lambda1 * (F.sum(F.softplus(y_hr)) / batchsize + F.sum(F.softplus(-t_hr)) / batchsize)
 
         discriminator.cleargrads()
         loss_dis.backward()
@@ -112,10 +112,8 @@ for epoch in range(epochs):
         vgg_loss = calc_loss(hr_feat1, fake_feat1)
         vgg_loss += calc_loss(hr_feat2, fake_feat2)
         vgg_loss += calc_loss(hr_feat3, fake_feat3)
-        gen_loss = lambda1 * F.sum(F.softplus(y_hr)) / batchsize
+        gen_loss = lambda1 * F.sum(F.softplus(-y_hr)) / batchsize
         gen_loss += vgg_loss
-
-        #gen_loss = F.mean_squared_error(x_hr, t)
 
         generator.cleargrads()
         vgg.cleargrads()
@@ -124,11 +122,11 @@ for epoch in range(epochs):
         vgg_opt.update()
         gen_loss.unchain_backward()
 
-        sum_dis_loss += loss_dis
-        sum_gen_loss += gen_loss
+        sum_dis_loss += loss_dis.data.get()
+        sum_gen_loss += gen_loss.data.get()
 
         if epoch % interval == 0 and batch == 0:
-            serializers.save_npz("generator_per.model", generator)
+            serializers.save_npz("%s/generator_%d.model"%(outdir,epoch), generator)
             with chainer.using_config("train", False):
                 y = generator(x_test)
             y = y.data.get()
