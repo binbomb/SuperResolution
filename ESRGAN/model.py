@@ -5,11 +5,12 @@ from chainer import cuda,Chain,initializers
 import numpy as np
 
 xp = cuda.cupy
-cuda.get_device(0).get()
+cuda.get_device(0).use()
 
 class ResBlock_single(Chain):
     def __init__(self, in_ch, out_ch):
         w = initializers.Normal(0.02)
+        super(ResBlock_single,self).__init__()
         with self.init_scope():
             self.c0 = L.Convolution2D(in_ch, out_ch, 3,1,1,initialW = w)
 
@@ -21,12 +22,13 @@ class ResBlock_single(Chain):
 class Dense_Block(Chain):
     def __init__(self, in_ch, out_ch):
         w = initializers.Normal(0.02)
+        super(Dense_Block,self).__init__()
         with self.init_scope():
             self.res0 = ResBlock_single(in_ch, out_ch)
             self.res1 = ResBlock_single(out_ch, out_ch)
             self.res2 = ResBlock_single(out_ch, out_ch)
             self.res3 = ResBlock_single(out_ch, out_ch)
-            self.c0 = L.Convotlution2D(out_ch, out_ch, 3,1,1,initialW = w)
+            self.c0 = L.Convolution2D(out_ch, out_ch, 3,1,1,initialW = w)
 
     def __call__(self,x):
         h1 = self.res0(x)
@@ -39,13 +41,14 @@ class Dense_Block(Chain):
 
 class RRDB(Chain):
     def __init__(self, in_ch, out_ch):
-        w = initializer.Normal(0.02)
+        w = initializers.Normal(0.02)
+        super(RRDB,self).__init__()
         with self.init_scope():
             self.dense0 = Dense_Block(in_ch, out_ch)
             self.dense1 = Dense_Block(out_ch, out_ch)
             self.dense2 = Dense_Block(out_ch, out_ch)
 
-    def __call__(self,x,beta):
+    def __call__(self,x,beta=1.0):
         h1 = self.dense0(x)
         h2 = self.dense1(h1 + beta * x)
         h3 = self.dense2(h2 + beta * h1)
@@ -64,21 +67,23 @@ class Generator(Chain):
     def __init__(self,base=64):
         super(Generator,self).__init__()
         w = initializers.Normal(0.02)
+        self.base=base
         with self.init_scope():
             self.c0 = L.Convolution2D(3,base,3,1,1,initialW = w)
             self.rrdb0 = RRDB(base,base)
             self.rrdb1 = RRDB(base,base)
             self.rrdb2 = RRDB(base,base)
             self.rrdb3 = RRDB(base,base)
+            #self.rrdb4 = RRDB(base,base)
             self.c1 = L.Convolution2D(base,base*2,3,1,1,initialW = w)
             self.c2 = L.Convolution2D(base*2,base*4,3,1,1,initialW = w)
-            self.c3 = L.Convolution2D(base,base*2,3,1,1,initialW = w)
-            self.c4 = L.Convolution2D(base*2, base*4,3,1,1,initialW = w)
+            self.c3 = L.Convolution2D(base*4,base*2,3,1,1,initialW = w)
+            self.c4 = L.Convolution2D(base*2, base,3,1,1,initialW = w)
             self.c5 = L.Convolution2D(base,base,3,1,1,initialW = w)
             self.c6 = L.Convolution2D(base,3,3,1,1,initialW = w)
 
             self.bn0 = L.BatchNormalization(base)
-            self.bn1 = L.BatchNormalization(base)
+            self.bn1 = L.BatchNormalization(base*4)
             self.bn2 = L.BatchNormalization(base)
             self.bn3 = L.BatchNormalization(base)
 
@@ -88,9 +93,12 @@ class Generator(Chain):
         h = self.rrdb1(h)
         h = self.rrdb2(h)
         h = self.rrdb3(h)
-        h = pixel_shuffler(self.c2(self.c1(h)))
+        #h = self.rrdb4(h)
+        h = F.unpooling_2d(h,2,2,0,cover_all=False)
+        h = self.c2(self.c1(h))
         h = F.relu(self.bn1(h))
-        h = pixel_shuffler(self.c4(self.c3(h)))
+        h = F.unpooling_2d(h,2,2,0,cover_all=False)
+        h = self.c4(self.c3(h))
         h = F.relu(self.bn2(h))
         h = F.relu(self.bn3(self.c5(h)))
         h = self.c6(h)
@@ -98,7 +106,7 @@ class Generator(Chain):
         return h
 
 class CBR_dis(Chain):
-    def __init__(self, in_ch, out_ch, bn = True, activation = F.relu, down = None):
+    def __init__(self, in_ch, out_ch, bn = True, activation = F.leaky_relu, down = None):
         super(CBR_dis,self).__init__()
         self.activation = activation
         self.bn = bn
@@ -108,7 +116,7 @@ class CBR_dis(Chain):
 
         with self.init_scope():
             self.c0 = L.Convolution2D(in_ch, out_ch, 3,1,1, initialW = w)
-            self.cdown = L.Convolution2D(in_ch,out_ch, 3,2,1)
+            self.cdown = L.Convolution2D(in_ch,out_ch, 4,2,1)
             self.bn0 = L.BatchNormalization(int(out_ch))
 
     def __call__(self,x):
@@ -137,7 +145,7 @@ class Discriminator(Chain):
             self.cbr3 = CBR_dis(base*2, base*4, activation=F.leaky_relu)
             self.cbr4 = CBR_dis(base*4, base*4, activation=F.leaky_relu, down = True)
             self.cbr5 = CBR_dis(base*4, base*8, activation=F.leaky_relu)
-            self.cbr6 = CBR_dis(base*8, base*8, activation=F.leaky_relu, down = True)
+            #self.cbr6 = CBR_dis(base*8, base*8, activation=F.leaky_relu, down = True)
             self.l0 = L.Linear(None, 512, initialW = w)
             self.l1 = L.Linear(512,1,initialW = w)
     
@@ -149,7 +157,7 @@ class Discriminator(Chain):
         h = self.cbr3(h)
         h = self.cbr4(h)
         h = self.cbr5(h)
-        h = self.cbr6(h)
+        #h = self.cbr6(h)
         h = F.leaky_relu(self.l0(h))
         h = self.l1(h)
 
@@ -163,9 +171,8 @@ class VGG(Chain):
             self.base = L.VGG16Layers()
 
     def __call__(self,x, last_only = False):
-        h2 = self.base(x, layers=["conv2_1"])["conv2_1"]
         h3 = self.base(x, layers=["conv3_1"])["conv3_1"]
         h4 = self.base(x, layers=["conv4_1"])["conv4_1"]
 
-        return h2,h3,h4
+        return h3,h4
     
