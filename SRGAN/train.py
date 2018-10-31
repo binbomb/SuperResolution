@@ -40,10 +40,10 @@ interval = args.interval
 testsize = args.testsize
 Ntrain = args.Ntrain
 
-image_path = "/coco/"
+image_path = "/usr/MachineLearning/Dataset/trim/coco_trim/"
 image_list = os.listdir(image_path)
 
-outdir = "./output"
+outdir = "./output_train"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
@@ -59,6 +59,7 @@ x_test = chainer.as_variable(xp.array(test_box).astype(xp.float32))
 generator = Generator()
 generator.to_gpu()
 gen_opt = set_optimizer(generator)
+#serializers.load_npz("./generator_pretrain.model",generator)
 
 discriminator = Discriminator()
 discriminator.to_gpu()
@@ -72,7 +73,7 @@ vgg.base.disable_update()
 for epoch in range(epochs):
     sum_gen_loss = 0
     sum_dis_loss = 0
-    for batch in range(0, 2000, batchsize):
+    for batch in range(0, 5000, batchsize):
         hr_box = []
         sr_box = []
         for i in range(batchsize):
@@ -103,15 +104,14 @@ for epoch in range(epochs):
         x_hr = generator(x)
         y_hr = discriminator(x_hr)
 
-        hr_feat1,hr_feat2,hr_feat3 = vgg(t)
+        hr_feat1,hr_feat2 = vgg(t)
         hr_feat1.unchain_backward()
         hr_feat2.unchain_backward()
-        hr_feat3.unchain_backward()
-        fake_feat1, fake_feat2, fake_feat3 = vgg(x_hr)
+        fake_feat1, fake_feat2 = vgg(x_hr)
 
         vgg_loss = calc_loss(hr_feat1, fake_feat1)
         vgg_loss += calc_loss(hr_feat2, fake_feat2)
-        vgg_loss += calc_loss(hr_feat3, fake_feat3)
+        #vgg_loss += calc_loss(hr_feat3, fake_feat3)
         gen_loss = lambda1 * F.sum(F.softplus(-y_hr)) / batchsize
         gen_loss += vgg_loss
 

@@ -30,6 +30,8 @@ class CBR(Chain):
     def __call__(self,x):
         h = self.c0(x)
         h = pixel_shuffler(self.out_ch, h)
+        #h = F.unpooling_2d(x,2,2,0,cover_all=False)
+        #h = self.c0(h)
             
         if self.bn:
             h = self.bn0(h)
@@ -50,7 +52,7 @@ class CBR_dis(Chain):
 
         with self.init_scope():
             self.c0 = L.Convolution2D(in_ch, out_ch, 3,1,1, initialW = w)
-            self.cdown = L.Convolution2D(in_ch,out_ch, 3,2,1)
+            self.cdown = L.Convolution2D(in_ch,out_ch, 4,2,1)
             self.bn0 = L.BatchNormalization(int(out_ch))
 
     def __call__(self,x):
@@ -93,6 +95,7 @@ class Generator(Chain):
             self.r0 = Gen_ResBlock(base, base)
             self.r1 = Gen_ResBlock(base, base)
             self.r2 = Gen_ResBlock(base, base)
+            self.r3 = Gen_ResBlock(base, base)
             self.c0 = L.Convolution2D(base,base,3,1,1,initialW = w)
             self.cbr0 = CBR(base, base*4)
             self.cbr1 = CBR(base, base*4)
@@ -106,6 +109,7 @@ class Generator(Chain):
         h = self.r0(h1)
         h = self.r1(h)
         h = self.r2(h)
+        h = self.r3(h)
         h = h1 + F.relu(self.bn1(self.c0(h)))
         h = self.cbr0(h)
         h = self.cbr1(h)
@@ -151,8 +155,7 @@ class VGG(Chain):
             self.base = L.VGG16Layers()
 
     def __call__(self,x, last_only = False):
-        h2 = self.base(x, layers=["conv2_1"])["conv2_1"]
-        h3 = self.base(x, layers=["conv3_1"])["conv3_1"]
-        h4 = self.base(x, layers=["conv4_1"])["conv4_1"]
+        h2 = self.base(x, layers=["conv2_2"])["conv2_2"]
+        h4 = self.base(x, layers=["conv4_3"])["conv4_3"]
 
-        return h2,h3,h4
+        return h2,h4
