@@ -46,7 +46,7 @@ iterations=args.iterations
 image_path="/coco/"
 image_list=os.listdir(image_path)
 
-outdir="./output_train"
+outdir="./output_pretrain"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
@@ -62,16 +62,6 @@ x_test=chainer.as_variable(xp.array(test_box).astype(xp.float32))
 generator=Generator()
 generator.to_gpu()
 gen_opt=set_optimizer(generator)
-serializers.load_npz("./output_pretrain/generator_pretrain.model",generator)
-
-discriminator=Discriminator()
-discriminator.to_gpu()
-dis_opt=set_optimizer(discriminator)
-
-vgg=VGG()
-vgg.to_gpu()
-vgg_opt=set_optimizer(vgg)
-vgg.base.disable_update()
 
 for epoch in range(epochs):
     sum_gen_loss=0
@@ -90,59 +80,19 @@ for epoch in range(epochs):
         t=chainer.as_variable(xp.array(hr_box).astype(xp.float32))
         
         y=generator(x)
-        y_dis=discriminator(y)
-        t_dis=discriminator(t)
-        y.unchain_backward()
-
-        # Relativistic loss
-        fake_mean=F.broadcast_to(F.mean(y_dis),(batchsize,1))
-        real_mean=F.broadcast_to(F.mean(t_dis),(batchsize,1))
-        dis_loss=F.mean(F.softplus(-(t_dis-fake_mean)))
-        dis_loss+=F.mean(F.softplus(y_dis-real_mean))
-        dis_loss /= 2
-
-        # Adversarial loss
-        #dis_loss = F.mean(F.softplus(y_dis)) + F.mean(F.softplus(-t_dis))
-
-        discriminator.cleargrads()
-        dis_loss.backward()
-        dis_opt.update()
-        dis_loss.unchain_backward()
-
-        y=generator(x)
-        y_dis=discriminator(y)
-        
-        # Relativistic loss
-        fake_mean=F.broadcast_to(F.mean(y_dis),(batchsize,1))
-        real_mean=F.broadcast_to(F.mean(t_dis),(batchsize,1))
-        adver_loss=F.mean(F.softplus(-(y_dis-real_mean)))
-        adver_loss+=F.mean(F.softplus(t_dis-fake_mean))
-        adver_loss /= 2
-
-        # Adversarial loss
-        #adver_loss = F.mean(F.softplus(-y_dis))
-
-        fake_feat1=vgg(y)
-        real_feat1=vgg(t)
-        real_feat1.unchain_backward()
-        vgg_loss=calc_vgg_loss(fake_feat1,real_feat1)
-
         l1_loss=F.mean_absolute_error(y,t)
 
-        gen_loss=vgg_loss+adver_weight*adver_loss+l1_weight*l1_loss
+        gen_loss=l1_weight*l1_loss
 
         generator.cleargrads()
-        vgg.cleargrads()
         gen_loss.backward()
         gen_opt.update()
-        vgg_opt.update()
         gen_loss.unchain_backward()
 
-        sum_dis_loss+=dis_loss.data.get()
         sum_gen_loss+=gen_loss.data.get()
 
         if epoch%interval==0 and batch==0:
-            serializers.save_npz("%s/generator_%d.model"%(outdir,epoch),generator)
+            serializers.save_npz("%s/generator_pretrain.model"%(outdir),generator)
             with chainer.using_config("train", False):
                 y = generator(x_test)
             y = y.data.get()

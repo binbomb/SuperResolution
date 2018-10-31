@@ -17,7 +17,7 @@ class ResBlock_single(Chain):
     def __call__(self, x):
         h = F.leaky_relu(self.c0(x))
 
-        return h + x
+        return h
 
 class Dense_Block(Chain):
     def __init__(self, in_ch, out_ch):
@@ -48,12 +48,15 @@ class RRDB(Chain):
             self.dense1 = Dense_Block(out_ch, out_ch)
             self.dense2 = Dense_Block(out_ch, out_ch)
 
-    def __call__(self,x,beta=1.0):
+    def __call__(self,x,beta=0.2):
         h1 = self.dense0(x)
-        h2 = self.dense1(h1 + beta * x)
-        h3 = self.dense2(h2 + beta * h1)
+        x1 = beta*h1 + x
+        h2 = self.dense1(x1)
+        x2 = beta*h2 + x1
+        h3 = self.dense2(x2)
+        x3 = beta*h3 + x2
 
-        return beta * (x + h3)
+        return x + beta * x3
 
 def pixel_shuffler(out_ch, x, r = 2):
     b, c, w, h = x.shape
@@ -77,13 +80,13 @@ class Generator(Chain):
             #self.rrdb4 = RRDB(base,base)
             self.c1 = L.Convolution2D(base,base*2,3,1,1,initialW = w)
             self.c2 = L.Convolution2D(base*2,base*4,3,1,1,initialW = w)
-            self.c3 = L.Convolution2D(base*4,base*2,3,1,1,initialW = w)
-            self.c4 = L.Convolution2D(base*2, base,3,1,1,initialW = w)
+            self.c3 = L.Convolution2D(base,base*2,3,1,1,initialW = w)
+            self.c4 = L.Convolution2D(base*2, base*4,3,1,1,initialW = w)
             self.c5 = L.Convolution2D(base,base,3,1,1,initialW = w)
             self.c6 = L.Convolution2D(base,3,3,1,1,initialW = w)
 
             self.bn0 = L.BatchNormalization(base)
-            self.bn1 = L.BatchNormalization(base*4)
+            self.bn1 = L.BatchNormalization(base)
             self.bn2 = L.BatchNormalization(base)
             self.bn3 = L.BatchNormalization(base)
 
@@ -94,11 +97,11 @@ class Generator(Chain):
         h = self.rrdb2(h)
         h = self.rrdb3(h)
         #h = self.rrdb4(h)
-        h = F.unpooling_2d(h,2,2,0,cover_all=False)
         h = self.c2(self.c1(h))
+        h = pixel_shuffler(self.base*4,h)
         h = F.relu(self.bn1(h))
-        h = F.unpooling_2d(h,2,2,0,cover_all=False)
         h = self.c4(self.c3(h))
+        h = pixel_shuffler(self.base*4, h)
         h = F.relu(self.bn2(h))
         h = F.relu(self.bn3(self.c5(h)))
         h = self.c6(h)
@@ -171,8 +174,7 @@ class VGG(Chain):
             self.base = L.VGG16Layers()
 
     def __call__(self,x, last_only = False):
-        h3 = self.base(x, layers=["conv3_1"])["conv3_1"]
-        h4 = self.base(x, layers=["conv4_1"])["conv4_1"]
+        h4 = self.base(x, layers=["conv4_3"])["conv4_3"]
 
-        return h3,h4
+        return h4
     
