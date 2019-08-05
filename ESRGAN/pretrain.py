@@ -1,114 +1,86 @@
 import chainer
-import chainer.links as L
 import chainer.functions as F
-from chainer import cuda,Chain,optimizers,serializers
-import numpy as np
-import os
 import argparse
-import pylab
-from model import Generator, Discriminator, VGG
-from prepare import prepare_dataset
 
-xp=cuda.cupy
-cuda.get_device(0).use()
+from pathlib import Path
+from chainer import serializers
+from model_esrgan import Generator
+from dataset import DatasetLoader
+from utils import set_optimizer
+from evaluation import Evaluation
 
-def set_optimizer(model,alpha=0.0002,beta=0.5):
-    optimizer = optimizers.Adam(alpha=alpha,beta1=beta)
-    optimizer.setup(model)
 
-    return optimizer
+class ESRGANPretrainLossFunction:
+    def __init__(self):
+        pass
 
-def calc_vgg_loss(feat1, feat2):
-    _,_,h,w=feat1.shape
+    @staticmethod
+    def content_loss(y, t):
+        return F.mean_absolute_error(y, t)
 
-    return F.mean_squared_error(feat1,feat2)/(h*w)
+    def __str__(self):
+        return f"func1: {self.content_loss.__name__}"
 
-parser=argparse.ArgumentParser(description="ESRGAN")
-parser.add_argument("--epoch",default=1000,type=int,help="the number of epochs")
-parser.add_argument("--batchsize",default=2,type=int,help="batchsize")
-parser.add_argument("--testsize",default=2,type=int,help="testsize")
-parser.add_argument("--aw",default=0.005,type=float,help="weight of adversarial loss")
-parser.add_argument("--l1",default=0.01,type=float,help="weight of l1 loss")
-parser.add_argument("--interval",default=1,type=int,help="interval of snapshot")
-parser.add_argument("--Ntrain",default=24000,type=int,help="the number of training images")
-parser.add_argument("--iterations",default=2000,type=int,help="the numbef of iterations")
 
-args = parser.parse_args()
-epochs=args.epoch
-batchsize=args.batchsize
-testsize=args.testsize
-adver_weight=args.aw
-l1_weight=args.l1
-interval=args.interval
-Ntrain=args.Ntrain
-iterations=args.iterations
+def train(epochs, iterations, outdir, path, batchsize, validsize):
+    # Dataset Definition
+    dataloader = DatasetLoader(path)
+    print(dataloader)
+    t_valid, x_valid = dataloader(validsize, mode="valid")
 
-image_path="/coco/"
-image_list=os.listdir(image_path)
+    # Model & Optimizer Definition
+    model = Generator()
+    model.to_gpu()
+    optimizer = set_optimizer(model)
 
-outdir="./output_pretrain"
-if not os.path.exists(outdir):
-    os.mkdir(outdir)
+    # Loss Function Definition
+    lossfunc = ESRGANPretrainLossFunction()
+    print(lossfunc)
 
-test_box=[]
-for i in range(testsize):
-    rnd = np.random.randint(Ntrain + 1, Ntrain + 100)
-    image_name = image_path + image_list[rnd]
-    _, sr = prepare_dataset(image_name)
-    test_box.append(sr)
+    # Evaluation Definition
+    evaluator = Evaluation()
 
-x_test=chainer.as_variable(xp.array(test_box).astype(xp.float32))
+    for epoch in range(epochs):
+        sum_loss = 0
+        for batch in range(0, iterations, batchsize):
+            t_train, x_train = dataloader(batchsize, mode="train")
 
-generator=Generator()
-generator.to_gpu()
-gen_opt=set_optimizer(generator)
+            y_train = model(x_train)
+            loss = lossfunc.content_loss(y_train, t_train)
 
-for epoch in range(epochs):
-    sum_gen_loss=0
-    sum_dis_loss=0
-    for batch in range(0,iterations,batchsize):
-        hr_box=[]
-        sr_box=[]
-        for index in range(batchsize):
-            rnd = np.random.randint(Ntrain)
-            image_name = image_path + image_list[rnd]
-            hr, sr = prepare_dataset(image_name)
-            hr_box.append(hr)
-            sr_box.append(sr)
+            model.cleargrads()
+            loss.backward()
+            optimizer.update()
+            loss.unchain_backward()
 
-        x=chainer.as_variable(xp.array(sr_box).astype(xp.float32))
-        t=chainer.as_variable(xp.array(hr_box).astype(xp.float32))
-        
-        y=generator(x)
-        l1_loss=F.mean_absolute_error(y,t)
+            sum_loss += loss.data
 
-        gen_loss=l1_weight*l1_loss
+            if batch == 0:
+                serializers.save_npz(f"{outdir}/model_{epoch}.model", model)
 
-        generator.cleargrads()
-        gen_loss.backward()
-        gen_opt.update()
-        gen_loss.unchain_backward()
+                with chainer.using_config('train', False):
+                    y_valid = model(x_valid)
+                x = x_valid.data.get()
+                y = y_valid.data.get()
+                t = t_valid.data.get()
 
-        sum_gen_loss+=gen_loss.data.get()
+                evaluator(x, y, t, epoch, outdir)
 
-        if epoch%interval==0 and batch==0:
-            serializers.save_npz("%s/generator_pretrain.model"%(outdir),generator)
-            with chainer.using_config("train", False):
-                y = generator(x_test)
-            y = y.data.get()
-            sr = x_test.data.get()
-            for i_ in range(testsize):
-                tmp = (np.clip((sr[i_,:,:,:])*127.5 + 127.5, 0, 255)).transpose(1,2,0).astype(np.uint8)
-                pylab.subplot(testsize,2,2*i_+1)
-                pylab.imshow(tmp)
-                pylab.axis('off')
-                pylab.savefig('%s/visualize_%d.png'%(outdir, epoch))
-                tmp = (np.clip((y[i_,:,:,:])*127.5 + 127.5, 0, 255)).transpose(1,2,0).astype(np.uint8)
-                pylab.subplot(testsize,2,2*i_+2)
-                pylab.imshow(tmp)
-                pylab.axis('off')
-                pylab.savefig('%s/visualize_%d.png'%(outdir, epoch))
+        print(f"epoch: {epoch}")
+        print(f"loss: {sum_loss / iterations}")
 
-    print("epoch:{}".format(epoch))
-    print("Discrimintor loss:{}".format(sum_dis_loss/Ntrain))
-    print("Generator loss:{}".format(sum_gen_loss/Ntrain))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ESRGANPretrain")
+    parser.add_argument('--e', type=int, default=1000, help="the number of epochs")
+    parser.add_argument('--i', type=int, default=20000, help="the number of iterations")
+    parser.add_argument('--b', type=int, default=32, help="batch size")
+    parser.add_argument('--v', type=int, default=3, help="valid size")
+
+    args = parser.parse_args()
+
+    dataset_path = Path('./Dataset/danbooru-images')
+    outdir = Path('./outdir_pretrain')
+    outdir.mkdir(exist_ok=True)
+
+    train(args.e, args.i, outdir, dataset_path, args.b, args.v)

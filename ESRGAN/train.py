@@ -1,164 +1,137 @@
 import chainer
-import chainer.links as L
 import chainer.functions as F
-from chainer import cuda,Chain,optimizers,serializers
-import numpy as np
-import os
 import argparse
-import pylab
-from model import Generator, Discriminator, VGG
-from prepare import prepare_dataset
 
-xp=cuda.cupy
-cuda.get_device(0).use()
+from pathlib import Path
+from chainer import serializers
+from model_esrgan import Generator, Discriminator, VGG
+from dataset import DatasetLoader
+from utils import set_optimizer
+from evaluation import Evaluation
 
-def set_optimizer(model,alpha=0.0002,beta=0.5):
-    optimizer = optimizers.Adam(alpha=alpha,beta1=beta)
-    optimizer.setup(model)
 
-    return optimizer
+class ESRGANLossFunction:
+    def __init__(self):
+        pass
 
-def calc_vgg_loss(feat1, feat2):
-    _,_,h,w=feat1.shape
+    @staticmethod
+    def content_loss(y, t):
+        return F.mean_absolute_error(y, t)
 
-    return F.mean_squared_error(feat1,feat2)/(h*w)
+    @staticmethod
+    def perceptual_loss(vgg, y, t):
+        y_feat = vgg(y)
+        t_feat = vgg(t)
+        sum_loss = 0
 
-parser=argparse.ArgumentParser(description="ESRGAN")
-parser.add_argument("--epoch",default=1000,type=int,help="the number of epochs")
-parser.add_argument("--batchsize",default=2,type=int,help="batchsize")
-parser.add_argument("--testsize",default=2,type=int,help="testsize")
-parser.add_argument("--aw",default=0.005,type=float,help="weight of adversarial loss")
-parser.add_argument("--l1",default=0.01,type=float,help="weight of l1 loss")
-parser.add_argument("--interval",default=1,type=int,help="interval of snapshot")
-parser.add_argument("--Ntrain",default=24000,type=int,help="the number of training images")
-parser.add_argument("--iterations",default=2000,type=int,help="the numbef of iterations")
+        for yf, tf in zip(y_feat, t_feat):
+            _, ch, h, w = yf.shape
+            sum_loss += F.mean_squared_error(yf, tf) / (ch * h * w)
 
-args = parser.parse_args()
-epochs=args.epoch
-batchsize=args.batchsize
-testsize=args.testsize
-adver_weight=args.aw
-l1_weight=args.l1
-interval=args.interval
-Ntrain=args.Ntrain
-iterations=args.iterations
+        return sum_loss
 
-image_path="/coco/"
-image_list=os.listdir(image_path)
+    @staticmethod
+    def dis_hinge_loss(discrminator, y, t):
+        fake = discrminator(y)
+        real = discrminator(t)
 
-outdir="./output_train"
-if not os.path.exists(outdir):
-    os.mkdir(outdir)
+        return F.mean(F.relu(1. - real)) + F.mean(F.relu(1. + fake))
 
-test_box=[]
-for i in range(testsize):
-    rnd = np.random.randint(Ntrain + 1, Ntrain + 100)
-    image_name = image_path + image_list[rnd]
-    _, sr = prepare_dataset(image_name)
-    test_box.append(sr)
+    @staticmethod
+    def gen_hinge_loss(discrminator, y):
+        fake = discrminator(y)
 
-x_test=chainer.as_variable(xp.array(test_box).astype(xp.float32))
+        return -F.mean(fake)
 
-generator=Generator()
-generator.to_gpu()
-gen_opt=set_optimizer(generator)
-serializers.load_npz("./output_pretrain/generator_pretrain.model",generator)
+    def __str__(self):
+        return f"func1: {self.content_loss.__name__}"
 
-discriminator=Discriminator()
-discriminator.to_gpu()
-dis_opt=set_optimizer(discriminator)
 
-vgg=VGG()
-vgg.to_gpu()
-vgg_opt=set_optimizer(vgg)
-vgg.base.disable_update()
+def train(epochs, iterations, outdir, path, batchsize, validsize,
+          adv_weight, content_weight):
+    # Dataset Definition
+    dataloader = DatasetLoader(path)
+    print(dataloader)
+    t_valid, x_valid = dataloader(validsize, mode="valid")
 
-for epoch in range(epochs):
-    sum_gen_loss=0
-    sum_dis_loss=0
-    for batch in range(0,iterations,batchsize):
-        hr_box=[]
-        sr_box=[]
-        for index in range(batchsize):
-            rnd = np.random.randint(Ntrain)
-            image_name = image_path + image_list[rnd]
-            hr, sr = prepare_dataset(image_name)
-            hr_box.append(hr)
-            sr_box.append(sr)
+    # Model & Optimizer Definition
+    model = Generator()
+    model.to_gpu()
+    optimizer = set_optimizer(model)
+    serializers.load_npz('./outdir_pretrain/model_80.model', model)
 
-        x=chainer.as_variable(xp.array(sr_box).astype(xp.float32))
-        t=chainer.as_variable(xp.array(hr_box).astype(xp.float32))
-        
-        y=generator(x)
-        y_dis=discriminator(y)
-        t_dis=discriminator(t)
-        y.unchain_backward()
+    discriminator = Discriminator()
+    discriminator.to_gpu()
+    dis_opt = set_optimizer(discriminator)
 
-        # Relativistic loss
-        fake_mean=F.broadcast_to(F.mean(y_dis),(batchsize,1))
-        real_mean=F.broadcast_to(F.mean(t_dis),(batchsize,1))
-        dis_loss=F.mean(F.softplus(-(t_dis-fake_mean)))
-        dis_loss+=F.mean(F.softplus(y_dis-real_mean))
-        dis_loss /= 2
+    vgg = VGG()
+    vgg.to_gpu()
+    vgg_opt = set_optimizer(vgg)
+    vgg.base.disable_update()
 
-        # Adversarial loss
-        #dis_loss = F.mean(F.softplus(y_dis)) + F.mean(F.softplus(-t_dis))
+    # Loss Function Definition
+    lossfunc = ESRGANLossFunction()
+    print(lossfunc)
 
-        discriminator.cleargrads()
-        dis_loss.backward()
-        dis_opt.update()
-        dis_loss.unchain_backward()
+    # Evaluation Definition
+    evaluator = Evaluation()
 
-        y=generator(x)
-        y_dis=discriminator(y)
-        
-        # Relativistic loss
-        fake_mean=F.broadcast_to(F.mean(y_dis),(batchsize,1))
-        real_mean=F.broadcast_to(F.mean(t_dis),(batchsize,1))
-        adver_loss=F.mean(F.softplus(-(y_dis-real_mean)))
-        adver_loss+=F.mean(F.softplus(t_dis-fake_mean))
-        adver_loss /= 2
+    for epoch in range(epochs):
+        sum_loss = 0
+        for batch in range(0, iterations, batchsize):
+            t_train, x_train = dataloader(batchsize, mode="train")
 
-        # Adversarial loss
-        #adver_loss = F.mean(F.softplus(-y_dis))
+            y_train = model(x_train)
+            y_train.unchain_backward()
+            loss = adv_weight * lossfunc.dis_hinge_loss(discriminator, y_train, t_train)
 
-        fake_feat1=vgg(y)
-        real_feat1=vgg(t)
-        real_feat1.unchain_backward()
-        vgg_loss=calc_vgg_loss(fake_feat1,real_feat1)
+            discriminator.cleargrads()
+            loss.backward()
+            dis_opt.update()
+            loss.unchain_backward()
 
-        l1_loss=F.mean_absolute_error(y,t)
+            y_train = model(x_train)
+            loss = adv_weight * lossfunc.gen_hinge_loss(discriminator, y_train)
+            loss += content_weight * lossfunc.content_loss(y_train, t_train)
+            loss += lossfunc.perceptual_loss(vgg, y_train, t_train)
 
-        gen_loss=vgg_loss+adver_weight*adver_loss+l1_weight*l1_loss
+            model.cleargrads()
+            vgg.cleargrads()
+            loss.backward()
+            optimizer.update()
+            vgg_opt.update()
+            loss.unchain_backward()
 
-        generator.cleargrads()
-        vgg.cleargrads()
-        gen_loss.backward()
-        gen_opt.update()
-        vgg_opt.update()
-        gen_loss.unchain_backward()
+            sum_loss += loss.data
 
-        sum_dis_loss+=dis_loss.data.get()
-        sum_gen_loss+=gen_loss.data.get()
+            if batch == 0:
+                serializers.save_npz(f"{outdir}/model_{epoch}.model", model)
 
-        if epoch%interval==0 and batch==0:
-            serializers.save_npz("%s/generator_%d.model"%(outdir,epoch),generator)
-            with chainer.using_config("train", False):
-                y = generator(x_test)
-            y = y.data.get()
-            sr = x_test.data.get()
-            for i_ in range(testsize):
-                tmp = (np.clip((sr[i_,:,:,:])*127.5 + 127.5, 0, 255)).transpose(1,2,0).astype(np.uint8)
-                pylab.subplot(testsize,2,2*i_+1)
-                pylab.imshow(tmp)
-                pylab.axis('off')
-                pylab.savefig('%s/visualize_%d.png'%(outdir, epoch))
-                tmp = (np.clip((y[i_,:,:,:])*127.5 + 127.5, 0, 255)).transpose(1,2,0).astype(np.uint8)
-                pylab.subplot(testsize,2,2*i_+2)
-                pylab.imshow(tmp)
-                pylab.axis('off')
-                pylab.savefig('%s/visualize_%d.png'%(outdir, epoch))
+                with chainer.using_config('train', False):
+                    y_valid = model(x_valid)
+                x = x_valid.data.get()
+                y = y_valid.data.get()
+                t = t_valid.data.get()
 
-    print("epoch:{}".format(epoch))
-    print("Discrimintor loss:{}".format(sum_dis_loss/Ntrain))
-    print("Generator loss:{}".format(sum_gen_loss/Ntrain))
+                evaluator(x, y, t, epoch, outdir)
+
+        print(f"epoch: {epoch}")
+        print(f"loss: {sum_loss / iterations}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="RAM")
+    parser.add_argument('--e', type=int, default=1000, help="the number of epochs")
+    parser.add_argument('--i', type=int, default=10000, help="the number of iterations")
+    parser.add_argument('--b', type=int, default=32, help="batch size")
+    parser.add_argument('--v', type=int, default=3, help="valid size")
+    parser.add_argument('--c', type=float, default=0.01, help="the weight of content loss")
+    parser.add_argument('--a', type=float, default=0.005, help="the weight of adversarial loss")
+
+    args = parser.parse_args()
+
+    dataset_path = Path('./Dataset/danbooru-images')
+    outdir = Path('./outdir_train')
+    outdir.mkdir(exist_ok=True)
+
+    train(args.e, args.i, outdir, dataset_path, args.b, args.v, args.a, args.c)
