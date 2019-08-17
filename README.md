@@ -12,6 +12,7 @@
 ![esrgan](https://github.com/SerialLain3170/Image-Enhancement/blob/master/Image/comparison.png)
 
 ### RAM
-[Paper](https://arxiv.org/pdf/1811.12043.pdf)
+[Paper](https://arxiv.org/pdf/1811.12043.pdf)  
 4x Super Resolution
+
 ![ram](https://github.com/SerialLain3170/SuperResolution/blob/master/RAM/ram_result.png)
