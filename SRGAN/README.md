@@ -2,20 +2,20 @@
 ## Summary
 
 ![net](https://github.com/SerialLain3170/Image-Enhancement/blob/master/SRGAN/srgan_net.png)
-- GeneratorにSRResNetを導入。Residual BlockとPixel Shufflerを考慮(コード中では3層のResidual block)。
-- 損失関数としてはAdversarial lossとContent loss(VGGの各層出力を利用)
+- The authors of paper use SRResNet as generator, SRResNet consist of Residual blocks in hidden layers and Pixel shuffler in upsampling layer.
+- Loss functions are adversarial loss and perceptual loss calculated with the output of each layer in VGG.
 
 ## Usage
-予め`image_path`に396✕396の画像を格納しておく。その後以下のコマンドを実行。
+Execute the command line below after containing 396×396 images into `image_path`.
 ```
 $ python train.py
 ```
 
 ### Result
-私の環境で生成した画像を以下に示す
+Image generated in my development environment is below.
 ![srgan](https://github.com/SerialLain3170/Image-Enhancement/blob/master/Image/srgan.png)
 
-比較対象としてBilinear補間とBicubic補間のアップサンプリングも載せている。
-- バッチサイズは3
-- 最適化手法はAdam(α=0.0002, β1=0.5)
-- Adversarial lossの重みは0.001
+There are images obtained by bilinear interpolation and bicubic interpolation to compare with the output of SRGAN.
+- Batch size: 3
+- Using Adam as optimizer
+- The weight of adversarial loss is 0.001
